@@ -4,6 +4,7 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
 import os
 import numpy as np
 from tqdm import tqdm
@@ -84,6 +85,18 @@ def load_generated_images(upto_stage):
         all_fakes.append(fakes)
     return torch.cat(all_fakes)
 
+def visualize_images(generator, num_images=16):
+    generator.eval()
+    z = torch.randn(num_images, nz).to(device)
+    with torch.no_grad():
+        samples = generator(z).cpu() * 0.5 + 0.5  # unnormalize from [-1,1] to [0,1]
+    grid = torchvision.utils.make_grid(samples, nrow=4)
+    plt.figure(figsize=(8, 8))
+    plt.axis("off")
+    plt.title("Generated Images")
+    plt.imshow(np.transpose(grid.numpy(), (1, 2, 0)))
+    plt.show()
+
 def train_discriminator(discriminator, real_loader, fake_images, criterion, optimizer):
     discriminator.train()
     losses = []
@@ -148,7 +161,7 @@ for stage in range(1, k+1):
 
     # Load previous generations for fake data
     if stage == 1:
-        fake_data = torch.empty(0, 3, image_size, image_size)
+        fake_data = torch.randn(5000, 3, image_size, image_size).clamp(-1, 1)
     else:
         fake_data = load_generated_images(stage-1)
 
@@ -164,6 +177,9 @@ for stage in range(1, k+1):
 
     print("Training generator...")
     train_generator(G, D, criterion, g_optim)
+
+    print("Visualizing current generator output...")
+    visualize_images(G)
 
     print("Saving generated images...")
     save_generated_images(G, stage)
