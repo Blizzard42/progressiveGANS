@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, ConcatDataset
 import matplotlib.pyplot as plt
 import os
 import numpy as np
@@ -16,9 +16,9 @@ gen_hidden = 64
 disc_hidden = 64
 batch_size = 128
 epochs = 100
-early_stop_patience = 5
+early_stop_patience = 2
 early_stop_threshold = 0.01
-k = 10  # Number of generator/discriminator pairs to train
+k = 1000  # Number of generator/discriminator pairs to train
 save_dir = "generated_data"
 os.makedirs(save_dir, exist_ok=True)
 
@@ -70,7 +70,7 @@ def early_stopping(losses, threshold=early_stop_threshold, patience=early_stop_p
     recent = losses[-patience:]
     return max(recent) - min(recent) < threshold
 
-def save_generated_images(generator, stage, num_samples=50000):
+def save_generated_images(generator, stage, num_samples=5000):
     generator.eval()
     z = torch.randn(num_samples, nz).to(device)
     with torch.no_grad():
@@ -100,20 +100,26 @@ def train_discriminator(discriminator, real_loader, fake_images, criterion, opti
     discriminator.train()
     losses = []
     fake_dataset = TensorDataset(fake_images, torch.zeros(len(fake_images)))
-    fake_loader = DataLoader(fake_dataset, batch_size=batch_size, shuffle=True)
+    real_dataset = TensorDataset(torch.stack([x for x, _ in real_loader.dataset]), torch.ones(len(real_loader.dataset)))
 
-    print(f"\nDiscriminator Training with {len(fake_dataset)} fake images and {len(real_loader.dataset)} real images")
+    # Calculate upsampling factor to equalize data
+    real_len = len(real_dataset)
+    fake_len = len(fake_dataset)
+    if real_len > fake_len:
+        fake_dataset = ConcatDataset([fake_dataset] * (real_len // fake_len + 1))
+    elif fake_len > real_len:
+        real_dataset = ConcatDataset([real_dataset] * (fake_len // real_len + 1))
+
+    combined_dataset = ConcatDataset([real_dataset, fake_dataset])
+    combined_loader = DataLoader(combined_dataset, batch_size=batch_size, shuffle=True)
+
+    print(f"\nDiscriminator Training with {len(fake_images)} fake images and {len(real_loader.dataset)} real images")
     for epoch in range(epochs):
         epoch_loss = 0.0
-        progress = tqdm(real_loader, desc=f"Epoch {epoch+1}/{epochs}", leave=False)
-        for real_batch, _ in progress:
-            real_batch = real_batch.to(device)
-            b_size = real_batch.size(0)
-            fake_batch, _ = next(iter(fake_loader))
-            fake_batch = fake_batch[:b_size].to(device)
-
-            inputs = torch.cat([real_batch, fake_batch])
-            labels = torch.cat([torch.ones(b_size), torch.zeros(b_size)]).to(device)
+        progress = tqdm(combined_loader, desc=f"Epoch {epoch+1}/{epochs}", leave=False)
+        for batch in progress:
+            inputs, labels = batch
+            inputs, labels = inputs.to(device), labels.to(device)
 
             optimizer.zero_grad()
             output = discriminator(inputs).squeeze()
@@ -124,7 +130,7 @@ def train_discriminator(discriminator, real_loader, fake_images, criterion, opti
             epoch_loss += loss.item()
             progress.set_postfix(loss=loss.item())
 
-        avg_loss = epoch_loss / len(real_loader)
+        avg_loss = epoch_loss / len(combined_loader)
         losses.append(avg_loss)
         print(f"Epoch {epoch+1}: D Loss = {avg_loss:.4f}")
         if early_stopping(losses):
@@ -173,7 +179,7 @@ for stage in range(1, k+1):
 
     # Load previous generations for fake data
     if stage == 1:
-        fake_data = torch.randn(5000, 3, image_size, image_size).clamp(-1, 1)
+        fake_data = torch.randn(50000, 3, image_size, image_size).clamp(-1, 1)
     else:
         fake_data = load_generated_images(stage-1)
 
