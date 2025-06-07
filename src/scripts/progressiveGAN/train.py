@@ -70,25 +70,26 @@ def early_stopping(losses, threshold=early_stop_threshold, patience=early_stop_p
     recent = losses[-patience:]
     return max(recent) - min(recent) < threshold
 
-def save_generated_images(generator, stage, num_samples=5000):
+def save_generated_images(generator, stage, num_samples=25000):
     generator.eval()
     z = torch.randn(num_samples, nz).to(device)
     with torch.no_grad():
         samples = generator(z).cpu()
     torch.save(samples, os.path.join(save_dir, f"gen_outputs_stage_{stage}.pt"))
 
-def load_generated_images(upto_stage):
-    all_fakes = []
-    for s in range(1, upto_stage+1):
-        fakes = torch.load(os.path.join(save_dir, f"gen_outputs_stage_{s}.pt"))
-        all_fakes.append(fakes)
-    return torch.cat(all_fakes)
+def load_generated_images_range(start_stage, end_stage):
+    fakes = []
+    for s in range(start_stage, end_stage + 1):
+        path = os.path.join(save_dir, f"gen_outputs_stage_{s}.pt")
+        if os.path.exists(path):
+            fakes.append(torch.load(path))
+    return fakes
 
 def visualize_images(generator, num_images=16):
     generator.eval()
     z = torch.randn(num_images, nz).to(device)
     with torch.no_grad():
-        samples = generator(z).cpu() * 0.5 + 0.5  # unnormalize from [-1,1] to [0,1]
+        samples = generator(z).cpu() * 0.5 + 0.5
     grid = torchvision.utils.make_grid(samples, nrow=4)
     plt.figure(figsize=(8, 8))
     plt.axis("off")
@@ -96,24 +97,25 @@ def visualize_images(generator, num_images=16):
     plt.imshow(np.transpose(grid.numpy(), (1, 2, 0)))
     plt.show()
 
-def train_discriminator(discriminator, real_loader, fake_images, criterion, optimizer):
+def train_discriminator(discriminator, real_loader, fake_collections, criterion, optimizer):
     discriminator.train()
     losses = []
-    fake_dataset = TensorDataset(fake_images, torch.zeros(len(fake_images)))
-    real_dataset = TensorDataset(torch.stack([x for x, _ in real_loader.dataset]), torch.ones(len(real_loader.dataset)))
 
-    # Calculate upsampling factor to equalize data
-    real_len = len(real_dataset)
-    fake_len = len(fake_dataset)
-    if real_len > fake_len:
-        fake_dataset = ConcatDataset([fake_dataset] * (real_len // fake_len + 1))
-    elif fake_len > real_len:
-        real_dataset = ConcatDataset([real_dataset] * (fake_len // real_len + 1))
+    real_images = torch.stack([x for x, _ in real_loader.dataset])
+    num_real = len(real_images)
+
+    latest_fake = fake_collections[0][:int(0.5 * num_real)]
+    recent_fakes = [f[:int(0.1 * num_real)] for f in fake_collections[1:]]
+
+    fake_images = torch.cat([latest_fake] + recent_fakes)
+
+    fake_dataset = TensorDataset(fake_images, torch.zeros(len(fake_images)))
+    real_dataset = TensorDataset(real_images, torch.ones(len(real_images)))
 
     combined_dataset = ConcatDataset([real_dataset, fake_dataset])
     combined_loader = DataLoader(combined_dataset, batch_size=batch_size, shuffle=True)
 
-    print(f"\nDiscriminator Training with {len(fake_images)} fake images and {len(real_loader.dataset)} real images")
+    print(f"\nDiscriminator Training with {len(fake_images)} fake and {len(real_images)} real images")
     for epoch in range(epochs):
         epoch_loss = 0.0
         progress = tqdm(combined_loader, desc=f"Epoch {epoch+1}/{epochs}", leave=False)
@@ -177,12 +179,6 @@ for stage in range(1, k+1):
     print(f"      Stage {stage}/{k}")
     print(f"============================")
 
-    # Load previous generations for fake data
-    if stage == 1:
-        fake_data = torch.randn(50000, 3, image_size, image_size).clamp(-1, 1)
-    else:
-        fake_data = load_generated_images(stage-1)
-
     D = Discriminator().to(device)
     G = Generator().to(device)
 
@@ -190,14 +186,20 @@ for stage in range(1, k+1):
     g_optim = optim.Adam(G.parameters(), lr=0.0002, betas=(0.5, 0.999))
     criterion = nn.BCELoss()
 
+    if stage == 1:
+        fake_data = torch.randn(50000, 3, image_size, image_size).clamp(-1, 1)
+        fake_collections = [fake_data]
+    else:
+        fake_collections = load_generated_images_range(max(1, stage - 5), stage - 1)[::-1]
+
     print("Training discriminator...")
-    train_discriminator(D, dataloader, fake_data, criterion, d_optim)
+    train_discriminator(D, dataloader, fake_collections, criterion, d_optim)
 
     print("Training generator...")
     train_generator(G, D, criterion, g_optim)
 
-    print("Visualizing current generator output...")
-    visualize_images(G)
+    # print("Visualizing current generator output...")
+    # visualize_images(G)
 
     print("Saving generated images...")
     save_generated_images(G, stage)
