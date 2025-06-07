@@ -18,12 +18,11 @@ batch_size = 128
 epochs = 100
 early_stop_patience = 5
 early_stop_threshold = 0.01
-k = 3  # Number of generator/discriminator pairs to train
+k = 10  # Number of generator/discriminator pairs to train
 save_dir = "generated_data"
 os.makedirs(save_dir, exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using device: ", device)
 
 # ------------------ DATASET ------------------
 transform = transforms.Compose([
@@ -71,7 +70,7 @@ def early_stopping(losses, threshold=early_stop_threshold, patience=early_stop_p
     recent = losses[-patience:]
     return max(recent) - min(recent) < threshold
 
-def save_generated_images(generator, stage, num_samples=5000):
+def save_generated_images(generator, stage, num_samples=50000):
     generator.eval()
     z = torch.randn(num_samples, nz).to(device)
     with torch.no_grad():
@@ -103,9 +102,11 @@ def train_discriminator(discriminator, real_loader, fake_images, criterion, opti
     fake_dataset = TensorDataset(fake_images, torch.zeros(len(fake_images)))
     fake_loader = DataLoader(fake_dataset, batch_size=batch_size, shuffle=True)
 
+    print(f"\nDiscriminator Training with {len(fake_dataset)} fake images and {len(real_loader.dataset)} real images")
     for epoch in range(epochs):
         epoch_loss = 0.0
-        for real_batch, _ in real_loader:
+        progress = tqdm(real_loader, desc=f"Epoch {epoch+1}/{epochs}", leave=False)
+        for real_batch, _ in progress:
             real_batch = real_batch.to(device)
             b_size = real_batch.size(0)
             fake_batch, _ = next(iter(fake_loader))
@@ -121,8 +122,11 @@ def train_discriminator(discriminator, real_loader, fake_images, criterion, opti
             optimizer.step()
 
             epoch_loss += loss.item()
+            progress.set_postfix(loss=loss.item())
 
-        losses.append(epoch_loss / len(real_loader))
+        avg_loss = epoch_loss / len(real_loader)
+        losses.append(avg_loss)
+        print(f"Epoch {epoch+1}: D Loss = {avg_loss:.4f}")
         if early_stopping(losses):
             print("Convergence Detected: exiting discriminator training early")
             break
@@ -131,9 +135,11 @@ def train_generator(generator, frozen_discriminator, criterion, optimizer):
     generator.train()
     losses = []
 
+    print("\nGenerator Training")
     for epoch in range(epochs):
         epoch_loss = 0.0
-        for _ in range(len(dataloader)):
+        progress = tqdm(range(len(dataloader)), desc=f"Epoch {epoch+1}/{epochs}", leave=False)
+        for _ in progress:
             z = torch.randn(batch_size, nz).to(device)
             fake_images = generator(z)
 
@@ -150,14 +156,20 @@ def train_generator(generator, frozen_discriminator, criterion, optimizer):
             optimizer.step()
 
             epoch_loss += loss.item()
+            progress.set_postfix(loss=loss.item())
 
-        losses.append(epoch_loss / len(dataloader))
+        avg_loss = epoch_loss / len(dataloader)
+        losses.append(avg_loss)
+        print(f"Epoch {epoch+1}: G Loss = {avg_loss:.4f}")
         if early_stopping(losses):
+            print("Early stopping generator.")
             break
 
 # ------------------ MAIN TRAINING LOOP ------------------
 for stage in range(1, k+1):
-    print(f"\n--- Stage {stage} ---")
+    print(f"\n============================")
+    print(f"      Stage {stage}/{k}")
+    print(f"============================")
 
     # Load previous generations for fake data
     if stage == 1:
